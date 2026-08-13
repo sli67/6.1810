@@ -3,14 +3,14 @@
 #include "user/user.h"
 #include "kernel/riscv.h"
 
-#define DATASIZE (8*4096)
+#define DATASIZE (8 * 4096)
 
 char data[DATASIZE];
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
-  if(argc != 2){
+  if (argc != 2)
+  {
     printf("Usage: secret the-secret\n");
     exit(1);
   }
@@ -21,4 +21,3 @@ main(int argc, char *argv[])
 
   exit(0);
 }
-
