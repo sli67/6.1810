@@ -1,0 +1,8 @@
+1. a0, a1, a2 are the first three arguments of the function call. a2 holds 13.
+2. 0x2e, the compiler precomputes the value of f(8)+1
+3. 0x73e
+4. 0x3c
+5. HE110 World
+   i = 0x726c6400 
+   No need to change 57616.
+6. The code does not compile, because the pattern needs two arguments.
