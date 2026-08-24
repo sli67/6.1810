@@ -11,20 +11,28 @@
 #include "net.h"
 
 // xv6's ethernet and IP addresses
-static uint8 local_mac[ETHADDR_LEN] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
+static uint8 local_mac[ETHADDR_LEN] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
 static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 
 // qemu host's ethernet address.
-static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
+static uint8 host_mac[ETHADDR_LEN] = {0x52, 0x55, 0x0a, 0x00, 0x02, 0x02};
 
 static struct spinlock netlock;
 
-void
-netinit(void)
+struct portsys
+{
+  short port;
+  int proc;
+  int head;
+  int tail;
+  struct eth *buf[16];
+} ports[128];
+
+void netinit(void)
 {
   initlock(&netlock, "netlock");
+  memset(ports, 0, sizeof(ports));
 }
-
 
 //
 // bind(int port)
@@ -34,10 +42,22 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
-
+  int port;
+  argint(0, &port);
+  for (int i = 0; i < 128; i++)
+    if (ports[i].port == port && ports[i].proc != 0)
+      return -1;
+  for (int i = 0; i < 128; i++)
+  {
+    if (ports[i].proc == 0)
+    {
+      ports[i].proc = myproc()->pid;
+      ports[i].port = port;
+      memset(ports[i].buf, 0, sizeof(ports[i].buf));
+      ports[i].head = ports[i].tail = 0;
+      return 0;
+    }
+  }
   return -1;
 }
 
@@ -49,11 +69,25 @@ sys_bind(void)
 uint64
 sys_unbind(void)
 {
-  //
-  // Optional: Your code here.
-  //
-
-  return 0;
+  short port;
+  argint(1, (int *)&port);
+  for (int i = 0; i < 128; i++)
+  {
+    if (ports[i].port == port && ports[i].proc == myproc()->pid)
+    {
+      ports[i].proc = 0;
+      ports[i].port = 0;
+      int head = ports[i].head;
+      int tail = ports[i].tail;
+      while (head != tail)
+      {
+        kfree(ports[i].buf[head]);
+        head = (head + 1) % 16;
+      }
+      return 0;
+    }
+  }
+  return -1;
 }
 
 //
@@ -71,12 +105,53 @@ sys_unbind(void)
 // dport, *src, and *sport are host byte order.
 // bind(dport) must previously have been called.
 //
+
+static int min(int a, int b)
+{
+  return a < b ? a : b;
+}
+
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
+  acquire(&netlock);
+  int dport;
+  uint64 src, sport, buf;
+  int maxlen;
+
+  argint(0, &dport);
+  argaddr(1, &src);
+  argaddr(2, &sport);
+  argaddr(3, &buf);
+  argint(4, &maxlen);
+
+  for (int i = 0; i < 128; i++)
+  {
+    if (ports[i].port == dport)
+    {
+      while (ports[i].head == ports[i].tail){
+        sleep((void *)(uint64)dport, &netlock);
+        if(killed(myproc())){
+          release(&netlock);
+          return -1;
+        }
+      }
+      struct eth *eth = (struct eth *)ports[i].buf[ports[i].head];
+      struct ip *ip = (struct ip *)(eth + 1);
+      struct udp *udp = (struct udp *)(ip + 1);
+      ports[i].head = (ports[i].head + 1) % 16;
+      uint32 tmp1 = htonl(ip->ip_src);
+      copyout(myproc()->pagetable, src, (char *)&tmp1, 4);
+      uint16 tmp2 = htons(udp->sport);
+      copyout(myproc()->pagetable, sport, (char *)&tmp2, 2);
+      uint16 len = min(htons(udp->ulen) - sizeof(struct udp), maxlen);
+      copyout(myproc()->pagetable, buf, (char *)(udp + 1), len);
+      release(&netlock);
+      kfree(eth);
+      return len;
+    }
+  }
+  release(&netlock);
   return -1;
 }
 
@@ -95,13 +170,15 @@ in_cksum(const unsigned char *addr, int len)
    * sequential 16 bit words to it, and at the end, fold back all the
    * carry bits from the top 16 bits into the lower 16 bits.
    */
-  while (nleft > 1)  {
+  while (nleft > 1)
+  {
     sum += *w++;
     nleft -= 2;
   }
 
   /* mop up an odd byte, if necessary */
-  if (nleft == 1) {
+  if (nleft == 1)
+  {
     *(unsigned char *)(&answer) = *(const unsigned char *)w;
     sum += answer;
   }
@@ -135,17 +212,18 @@ sys_send(void)
   argint(4, &len);
 
   int total = len + sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp);
-  if(total > PGSIZE)
+  if (total > PGSIZE)
     return -1;
 
   char *buf = kalloc();
-  if(buf == 0){
+  if (buf == 0)
+  {
     printf("sys_send: kalloc failed\n");
     return -1;
   }
   memset(buf, 0, PGSIZE);
 
-  struct eth *eth = (struct eth *) buf;
+  struct eth *eth = (struct eth *)buf;
   memmove(eth->dhost, host_mac, ETHADDR_LEN);
   memmove(eth->shost, local_mac, ETHADDR_LEN);
   eth->type = htons(ETHTYPE_IP);
@@ -168,30 +246,51 @@ sys_send(void)
   udp->ulen = htons(len + sizeof(struct udp));
 
   char *payload = (char *)(udp + 1);
-  if(copyin(p->pagetable, payload, bufaddr, len) < 0){
+  if (copyin(p->pagetable, payload, bufaddr, len) < 0)
+  {
     kfree(buf);
     printf("send: copyin failed\n");
     return -1;
   }
 
-  e1000_transmit(buf, total);
+  if (e1000_transmit(buf, total) < 0)
+    kfree(buf);
 
   return 0;
 }
 
-void
-ip_rx(char *buf, int len)
+void ip_rx(char *buf, int len)
 {
   // don't delete this printf; make grade depends on it.
+  acquire(&netlock);
   static int seen_ip = 0;
-  if(seen_ip == 0)
+  if (seen_ip == 0)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
+  struct eth *eth = (struct eth *)buf;
+
+  struct ip *ip = (struct ip *)(eth + 1);
+  if (ip->ip_p == IPPROTO_UDP)
+  {
+    struct udp *udp = (struct udp *)(ip + 1);
+    for (int i = 0; i < 128; i++)
+    {
+      if ((ports[i].port == htons(udp->dport)) && ports[i].proc)
+      {
+        if ((ports[i].tail + 1) % 16 == ports[i].head)
+          goto drop;
+        ports[i].buf[ports[i].tail] = eth;
+        ports[i].tail = (ports[i].tail + 1) % 16;
+        wakeup((void *)(uint64)htons(udp->dport));
+        release(&netlock);
+        return;
+      }
+    }
+  }
+drop:
+  kfree(buf);
+  release(&netlock);
 }
 
 //
@@ -201,28 +300,28 @@ ip_rx(char *buf, int len)
 // qemu to send IP packets to xv6; the real ARP
 // protocol is more complex.
 //
-void
-arp_rx(char *inbuf)
+void arp_rx(char *inbuf)
 {
   static int seen_arp = 0;
 
-  if(seen_arp){
+  if (seen_arp)
+  {
     kfree(inbuf);
     return;
   }
   printf("arp_rx: received an ARP packet\n");
   seen_arp = 1;
 
-  struct eth *ineth = (struct eth *) inbuf;
-  struct arp *inarp = (struct arp *) (ineth + 1);
+  struct eth *ineth = (struct eth *)inbuf;
+  struct arp *inarp = (struct arp *)(ineth + 1);
 
   char *buf = kalloc();
-  if(buf == 0)
+  if (buf == 0)
     panic("send_arp_reply");
-  
-  struct eth *eth = (struct eth *) buf;
+
+  struct eth *eth = (struct eth *)buf;
   memmove(eth->dhost, ineth->shost, ETHADDR_LEN); // ethernet destination = query source
-  memmove(eth->shost, local_mac, ETHADDR_LEN); // ethernet source = xv6's ethernet address
+  memmove(eth->shost, local_mac, ETHADDR_LEN);    // ethernet source = xv6's ethernet address
   eth->type = htons(ETHTYPE_ARP);
 
   struct arp *arp = (struct arp *)(eth + 1);
@@ -237,23 +336,30 @@ arp_rx(char *inbuf)
   memmove(arp->tha, ineth->shost, ETHADDR_LEN);
   arp->tip = inarp->sip;
 
-  e1000_transmit(buf, sizeof(*eth) + sizeof(*arp));
+  if (e1000_transmit(buf, sizeof(*eth) + sizeof(*arp)) == -1)
+  {
+    kfree(buf);
+  }
 
   kfree(inbuf);
 }
 
-void
-net_rx(char *buf, int len)
+void net_rx(char *buf, int len)
 {
-  struct eth *eth = (struct eth *) buf;
+  struct eth *eth = (struct eth *)buf;
 
-  if(len >= sizeof(struct eth) + sizeof(struct arp) &&
-     ntohs(eth->type) == ETHTYPE_ARP){
+  if (len >= sizeof(struct eth) + sizeof(struct arp) &&
+      ntohs(eth->type) == ETHTYPE_ARP)
+  {
     arp_rx(buf);
-  } else if(len >= sizeof(struct eth) + sizeof(struct ip) &&
-     ntohs(eth->type) == ETHTYPE_IP){
+  }
+  else if (len >= sizeof(struct eth) + sizeof(struct ip) &&
+           ntohs(eth->type) == ETHTYPE_IP)
+  {
     ip_rx(buf, len);
-  } else {
+  }
+  else
+  {
     kfree(buf);
   }
 }
