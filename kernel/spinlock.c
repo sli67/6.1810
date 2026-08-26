@@ -124,28 +124,60 @@ release(struct spinlock *lk)
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  while(1){
+    acquire(&rwlk->l);
+    if(rwlk->wwait || rwlk->rw == 2){
+      release(&rwlk->l);
+    }
+    else break;
+  }
+  rwlk->rw = 1;
+  if(!rwlk->stat[cpuid()]){
+    rwlk->stat[cpuid()] = 1;
+    rwlk->rcnt++;
+  }
+  release(&rwlk->l);
 }
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
+  acquire(&rwlk->l);
+  if(rwlk->stat[cpuid()]){
+    rwlk->stat[cpuid()] = 0;
+    rwlk->rcnt--;
+  }
+  else{}//panic("RWRelease");}
+  if(rwlk->rcnt == 0){
+    rwlk->rw = 0;
+  }
   release(&rwlk->l);
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  while(1){
+    acquire(&rwlk->l);
+    if(rwlk->rw != 0){
+      rwlk->wwait = 1;
+      release(&rwlk->l);
+    }
+    else break;
+  }
+  rwlk->rw = 2;
+  rwlk->wholder = cpuid();
+  release(&rwlk->l);
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
+  acquire(&rwlk->l);
+  if(rwlk->wholder == cpuid()){
+    rwlk->rw = 0;
+    rwlk->wwait = 0;
+  }
   release(&rwlk->l);
 }
 
@@ -180,8 +212,9 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
   initlock(&rwlk->l, "rwlk");
+  rwlk->rw = rwlk->rcnt = rwlk->wwait = 0;
+  memset(rwlk->stat, 0, sizeof(rwlk));
 }
 
 // Test rwspinlock implementation.
