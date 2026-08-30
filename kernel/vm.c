@@ -7,6 +7,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "fcntl.h"
+#include "file.h"
 
 /*
  * the kernel's page table.
@@ -98,7 +100,7 @@ pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
   if(va >= MAXVA)
-    panic("walk");
+    printf("va: %ld\n",va),panic("walk");
 
   for(int level = 2; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
@@ -454,10 +456,30 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
   struct proc *p = myproc();
-
-  if (va >= p->sz)
-    return 0;
   va = PGROUNDDOWN(va);
+  if (va >= p->sz){
+    uint64 len;
+    for(int i=0;i<16;i++){
+      if((len = p->vma[i].len) != 0){
+        if(p->vma[i].addr<=va && va < p->vma[i].addr+len){
+          struct file *file = p->vma[i].file;
+          mem = (uint64)kalloc();
+          memset((void*)mem, 0, PGSIZE);
+          ilock(file->ip);
+          readi(file->ip, 0, mem, va - p->vma[i].addr ,PGSIZE);
+          iunlock(file->ip);
+          int flags=PTE_U;
+          if (p->vma[i].prot & PROT_READ)flags|=PTE_R;
+          if (p->vma[i].prot & PROT_WRITE)flags|=PTE_W;
+          if (p->vma[i].prot & PROT_EXEC)flags|=PTE_X;
+          mappages(pagetable, va, PGSIZE, mem, flags);
+          return mem;
+        }
+      }
+    }
+    return 0;
+  }
+  
   if(ismapped(pagetable, va)) {
     return 0;
   }

@@ -503,3 +503,110 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void){
+  struct proc *p = myproc();
+
+  uint64 addr,len;
+  int prot,flags,fd;
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  if(!(p->ofile[fd]))
+    return -1;
+
+  if((prot & PROT_READ )&& !p->ofile[fd]->readable)return-1;
+  if((prot & PROT_WRITE )&& !p->ofile[fd]->writable && (flags&MAP_SHARED))return-1;
+  if((flags & MAP_SHARED)&& !p->ofile[fd]->writable)return-1;
+
+  uint64 va=0;
+  for(uint64 i=0;i<1<<9;i++){
+    int avail = 1;
+    for(int slot=0;slot<16;slot++){
+      if(p->vma[slot].len !=0 && (p->vma[slot].addr >> 30) == i){
+        avail = 0;
+        break;
+      }
+    }
+    if(avail){
+      if(!p->pagetable[i]){
+        va = i << 30;
+        break;
+      }
+    }
+  }
+  if(!va) return -1;
+
+  for(int i=0;i<16;i++){
+    if(p->vma[i].len != 0)continue;
+    p->vma[i].addr = va;
+    p->vma[i].len = len;
+    p->vma[i].prot = prot;
+    p->vma[i].flags = flags;
+    p->vma[i].file = p->ofile[fd];
+    p->vma[i].start = va;
+    p->ofile[fd]->ref++;
+    return va;
+  }
+  return -1;
+}
+
+uint64 kmunmap(uint64 addr, uint64 len);
+uint64
+sys_munmap(void){
+  uint64 addr, len;
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  return kmunmap(addr,len);
+}
+
+uint64
+kmunmap(uint64 addr, uint64 len){
+  struct proc *p = myproc();
+  struct VMA_record *vma;
+  uint64 va,start,end;
+  for(int i=0;i<16;i++){
+    vma = &p->vma[i];
+    if(addr>=vma->addr && addr< vma->addr + vma->len ){
+      if(addr==vma->addr){
+        start = PGROUNDDOWN(addr),end = PGROUNDDOWN(addr + len);
+        vma->addr = addr+len;
+        vma->len -= len;
+      }
+      else{
+        start = PGROUNDUP(addr), end = PGROUNDUP(addr + len);
+        vma->len -= len;
+      }
+      int closing = (vma->len==0);
+      if(vma->flags == MAP_SHARED)
+        ilock(vma->file->ip),
+        begin_op();
+      uint64 filesize = vma->file->ip->size;
+      uint64 filestart = vma->start;
+      uint64 fileend = filesize + filestart;
+      for(va = start; va < end; va += PGSIZE){
+        if(!walkaddr(p->pagetable, va))continue;
+        if(vma->flags == MAP_SHARED){
+          if(fileend > va){
+            uint64 n = PGSIZE;
+            if(va+n>fileend){
+              n = fileend - va;
+            }
+            writei(vma->file->ip, 1, va, va - filestart, n);
+          }
+        }
+        uvmunmap(p->pagetable, va, 1, 1);
+      }
+      if(vma->flags == MAP_SHARED)
+        iunlock(vma->file->ip),
+        end_op();
+      if(closing)
+        fileclose(vma->file);
+      return 0;
+    }
+  }
+  return -1;
+}

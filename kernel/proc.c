@@ -146,6 +146,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  memset(p->vma, 0, sizeof(p->vma));
+
   return p;
 }
 
@@ -317,6 +319,8 @@ reparent(struct proc *p)
   }
 }
 
+extern uint64 kmunmap(uint64 addr, uint64 len);
+
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
@@ -335,6 +339,11 @@ kexit(int status)
       fileclose(f);
       p->ofile[fd] = 0;
     }
+  }
+
+  for(int i = 0; i < 16; i++){
+    if(p->vma[i].len == 0) continue;
+    kmunmap(p->vma[i].addr, p->vma[i].len);
   }
 
   begin_op();
