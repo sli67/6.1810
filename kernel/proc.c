@@ -287,6 +287,14 @@ kfork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  //copy the vma records
+  for(int i=0;i<NOFILE;i++){
+    if(p->vma[i].len){
+      np->vma[i] = p->vma[i];
+      filedup(np->vma[i].file);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;

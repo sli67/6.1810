@@ -504,23 +504,14 @@ sys_pipe(void)
   return 0;
 }
 
-uint64
-sys_mmap(void){
-  struct proc *p = myproc();
-
-  uint64 addr,len;
-  int prot,flags,fd;
-  argaddr(0, &addr);
-  argaddr(1, &len);
-  argint(2, &prot);
-  argint(3, &flags);
-  argint(4, &fd);
+uint64 
+kmmap(struct proc *p, uint64 addr, uint64 len, int prot, int flags, int fd){
   if(!(p->ofile[fd]))
     return -1;
 
   if((prot & PROT_READ )&& !p->ofile[fd]->readable)return-1;
   if((prot & PROT_WRITE )&& !p->ofile[fd]->writable && (flags&MAP_SHARED))return-1;
-  if((flags & MAP_SHARED)&& !p->ofile[fd]->writable)return-1;
+  
 
   uint64 va=0;
   for(uint64 i=0;i<1<<9;i++){
@@ -548,10 +539,25 @@ sys_mmap(void){
     p->vma[i].flags = flags;
     p->vma[i].file = p->ofile[fd];
     p->vma[i].start = va;
-    p->ofile[fd]->ref++;
+    p->vma[i].fd = fd;
+    filedup(p->ofile[fd]);
     return va;
   }
   return -1;
+}
+
+uint64
+sys_mmap(void){
+  struct proc *p = myproc();
+
+  uint64 addr,len;
+  int prot,flags,fd;
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  return kmmap(p, addr, len, prot, flags, fd);
 }
 
 uint64 kmunmap(uint64 addr, uint64 len);

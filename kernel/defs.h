@@ -1,7 +1,3 @@
-#ifdef LAB_MMAP
-typedef unsigned long size_t;
-typedef long int off_t;
-#endif
 struct buf;
 struct context;
 struct file;
@@ -14,6 +10,14 @@ struct stat;
 struct superblock;
 #ifdef LAB_LOCK
 struct rwspinlock;
+#endif
+
+#ifdef LAB_MMAP
+typedef unsigned long size_t;
+typedef long int off_t;
+
+uint64 kmmap(struct proc *p, uint64 addr, uint64 len, int prot, int flags, int fd);
+
 #endif
 
 // bio.c

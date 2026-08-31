@@ -462,6 +462,10 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     for(int i=0;i<16;i++){
       if((len = p->vma[i].len) != 0){
         if(p->vma[i].addr<=va && va < p->vma[i].addr+len){
+          if((p->vma[i].prot & PROT_WRITE)==0 && !read){
+            //process tries to write into vma that's read-only
+            return 0;
+          }
           struct file *file = p->vma[i].file;
           mem = (uint64)kalloc();
           memset((void*)mem, 0, PGSIZE);
